@@ -188,13 +188,19 @@ class ScoreFetcher:
         time.sleep(1) # 模拟人类行为
         normal_scores = self.get_normal_scores()
 
-        if not all_scores:
-            print("未能获取总成绩，无法进行合并。")
-            raise Exception("未能获取总成绩，无法进行合并。")
+        # 如果两个都没获取到，才算失败
+        if not all_scores and not normal_scores:
+            print("未能获取任何成绩数据。")
+            raise Exception("未能获取总成绩和平时成绩。")
 
+        # 初始化空列表
+        if not all_scores:
+            print("未获取到总成绩，但有平时成绩数据。")
+            all_scores = []
+        
         if not normal_scores:
-            print("未能获取平时成绩。")
-            raise Exception("未能获取平时成绩。")
+            print("未获取到平时成绩数据。")
+            normal_scores = []
 
         # 创建一个快速查找平时成绩的字典
         # key: (课程名称, 教师)
@@ -203,9 +209,14 @@ class ScoreFetcher:
             '总结': ns.get('总结')  # 包含summary信息
         } for ns in normal_scores}
         
+        # 记录已处理的课程
+        processed_keys = set()
+        
         # 遍历总成绩，将平时成绩详情合并进去
         for score_record in all_scores:
             key = (score_record['课程名称'], score_record['教师'])
+            processed_keys.add(key)
+            
             if key in normal_scores_map:
                 normal_data = normal_scores_map[key]
                 score_record['平时成绩详情'] = normal_data['详情']
@@ -214,7 +225,19 @@ class ScoreFetcher:
                 score_record['平时成绩详情'] = None
                 score_record['平时成绩总结'] = None
 
-        print("总成绩与平时成绩合并完成。")
+        # 添加只有平时成绩没有总成绩的课程
+        for normal_score in normal_scores:
+            key = (normal_score['课程名称'], normal_score['教师'])
+            if key not in processed_keys:
+                # 只需要关键字段，其他字段通过 .get() 访问时会返回 None
+                all_scores.append({
+                    '课程名称': normal_score['课程名称'],
+                    '教师': normal_score['教师'],
+                    '平时成绩详情': normal_score['详情'],
+                    '平时成绩总结': normal_score.get('总结')
+                })
+
+        print(f"总成绩与平时成绩合并完成。共 {len(all_scores)} 门课程。")
         return all_scores
    
 import requests
