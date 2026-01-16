@@ -1,5 +1,4 @@
-# news:
-- 已经修复“弱密码已被限制登录，请使用交大统一账号登录”问题，在你自己fork的仓库里面点击 Sync Fork -> Update Branch 即可更新到最新版本
+在你自己fork的仓库里面点击 Sync Fork -> Update Branch 即可更新到最新版本
   <img width="917" height="395" alt="image" src="https://github.com/user-attachments/assets/22733e69-f1f1-4491-b970-064b46c8ac9d" />
 
 
@@ -546,6 +545,7 @@ GitHub Gist 是 GitHub 提供的代码片段托管服务，本项目使用它来
 - ⭐ Star 本项目
 - 🐛 提交 Issue 反馈问题
 - 🔀 提交 Pull Request 改进项目
+
 
 
 
