@@ -291,6 +291,7 @@ def generate_change_notification_html(changes):
                     html += f'<td>{detail.get("占比", "")}</td>'
                     html += f'<td>{detail.get("提交时间", "")}</td>'
                     html += '</tr>'
+                html += f'<tr><td colspan="4">{course.get("平时成绩总结", "")}</td></tr>'
                 html += '</table>'
             
         elif change_type == '平时成绩变化':
@@ -307,6 +308,7 @@ def generate_change_notification_html(changes):
                     html += f'<td>{detail.get("占比", "")}</td>'
                     html += f'<td>{detail.get("提交时间", "")}</td>'
                     html += '</tr>'
+                html += f'<tr><td colspan="4">{course.get("平时成绩总结", "")}</td></tr>'
                 html += '</table>'
         
         html += '</div>'
