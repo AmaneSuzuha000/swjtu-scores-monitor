@@ -11,7 +11,7 @@ from utils import ocr  # 导入自定义OCR模块
 from urllib.parse import urlparse
 
 # --- 配置与常量 ---
-BASE_URL = "https://jwc.swjtu.edu.cn"
+BASE_URL = "http://jwc.swjtu.edu.cn"
 
 # 发起请求，允许重定向
 response = requests.get(
