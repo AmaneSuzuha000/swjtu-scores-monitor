@@ -29,6 +29,11 @@ jobs:
       # 4. 运行代码 (注入环境变量)
       - name: Run script
         env:
+          # 新教务（yhxt）：优先用 ytoken——不需要账号密码，也就不需要过验证码
+          YHXT_YTOKEN: ${{ secrets.YHXT_YTOKEN }}
+          # 可选：指向浏览器导出的 auth-state JSON（内部含 ytoken）
+          YHXT_AUTH_STATE: ${{ secrets.YHXT_AUTH_STATE }}
+          # 可选兜底：无头 CAS 登录（统一认证账号密码）。CAS 有风控，仅作后备。
           SWJTU_USERNAME: ${{ secrets.SWJTU_USERNAME }}
           SWJTU_PASSWORD: ${{ secrets.SWJTU_PASSWORD }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}

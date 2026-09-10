@@ -29,6 +29,8 @@ jobs:
       # 4. 运行代码 (注入环境变量)
       - name: Run script
         env:
+          YHXT_YTOKEN: ${{ secrets.YHXT_YTOKEN }}
+          YHXT_AUTH_STATE: ${{ secrets.YHXT_AUTH_STATE }}
           SWJTU_USERNAME: ${{ secrets.SWJTU_USERNAME }}
           SWJTU_PASSWORD: ${{ secrets.SWJTU_PASSWORD }}
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
