@@ -50,15 +50,27 @@
 ### 2.1 你需要准备
 
 1. **你的 GitHub 账号**
-2. **西南交大教务系统账号密码**
+2. **西南交大新教务（yhxt）的登录凭据**——推荐用 `YHXT_YTOKEN`（浏览器登录后从 localStorage 复制），也可以直接给统一认证账号密码
 3. **一个邮箱**（推荐使用QQ邮箱，可以绑定微信收取实时通知）
 
 ### 3.2 获取每个 Secret（密钥配置）
 
-#### ① SWJTU_USERNAME 和 SWJTU_PASSWORD
+#### ① YHXT_YTOKEN（推荐）或 SWJTU_USERNAME / SWJTU_PASSWORD
 
-- `SWJTU_USERNAME`：你的教务系统**学号**
-- `SWJTU_PASSWORD`：你的教务系统**密码**
+本项目已经从**旧教务（jwc，含验证码）**迁移到**新教务（yhxt）**，认证方式是请求头里的 `ytoken`：
+
+- `YHXT_YTOKEN`（**推荐**）：一个长效登录令牌。获取方法：
+  1. 浏览器打开 https://yhxt.swjtu.edu.cn/study/ 并完成登录
+  2. F12 → Application（应用）→ Local Storage → 站点域名 → 复制 `ytoken` 的值
+  3. 把它配成名为 `YHXT_YTOKEN` 的 Secret
+  - 优点：**不需要账号密码**，不涉及验证码，Actions 里也不会因为风控失败
+  - 失效后重新复制一次即可（日志会明确提示“ytoken 已失效”，不会误判成“没有成绩”）
+
+- `SWJTU_USERNAME` / `SWJTU_PASSWORD`（**可选兜底**）：统一认证账号密码。
+  未配置 `YHXT_YTOKEN` 时，程序会走无头 CAS 登录自动换 token。
+  CAS 有风控（可能出现图形验证码），因此仅建议作为后备方案。
+
+- `YHXT_AUTH_STATE`（可选）：指向浏览器导出的 auth-state JSON 文件路径，程序会从里面读 `ytoken`。
 
 #### ② SMTP_HOST、NOTIFY_EMAIL 和 EMAIL_PASSWORD
 
@@ -142,22 +154,23 @@ GitHub Personal Access Token（个人访问令牌）是用来授权程序访问�
 
 1. 进入你 Fork 的仓库，点击「Settings」
 2. 左侧菜单找到「Secrets and variables」→「Actions」
-3. 点击「New repository secret」，添加以下 6 个 Secrets：
+3. 点击「New repository secret」，添加以下 Secrets：
 
-| Name | Secret | 说明 |
-|------|---|------|
-| `SWJTU_USERNAME` | 你的学号 | 教务系统登录学号 |
-| `SWJTU_PASSWORD` | 你的密码 | 教务系统登录密码 |
-| `SMTP_HOST` | smtp.qq.com | 邮箱 SMTP 服务器地址 |
-| `NOTIFY_EMAIL` | your@qq.com | 接收通知的邮箱 |
-| `EMAIL_PASSWORD` | 授权码 | 邮箱授权码（不是邮箱密码） |
-| `GIST_PAT` | ghp_xxx... | GitHub Personal Access Token |
+| Name | Secret | 必填 | 说明 |
+|------|---|---|------|
+| `YHXT_YTOKEN` | 一串令牌 | ✅ | 新教务登录令牌（见 3.2 ①），**推荐** |
+| `SMTP_HOST` | smtp.qq.com | ✅ | 邮箱 SMTP 服务器地址 |
+| `NOTIFY_EMAIL` | your@qq.com | ✅ | 接收通知的邮箱 |
+| `EMAIL_PASSWORD` | 授权码 | ✅ | 邮箱授权码（不是邮箱密码） |
+| `GIST_PAT` | ghp_xxx... | ✅ | GitHub Personal Access Token |
+| `SWJTU_USERNAME` | 你的学号 | ⬜ | 统一认证学号（仅在没有 ytoken 时用于自动登录） |
+| `SWJTU_PASSWORD` | 你的密码 | ⬜ | 统一认证密码（同上） |
 
 **添加方式：**
-- 在「Name」输入框填入 Secret 名称（如 `SWJTU_USERNAME`）
+- 在「Name」输入框填入 Secret 名称（如 `YHXT_YTOKEN`）
 - 在「Secret」输入框填入对应的值
 - 点击「Add secret」
-- 重复以上步骤添加所有 6 个 Secrets
+- 重复以上步骤添加所有 Secrets
 
 ### 步骤 3：启用 GitHub Actions
 
@@ -189,12 +202,11 @@ GitHub Personal Access Token（个人访问令牌）是用来授权程序访问�
      --- 任务开始: 监控成绩变化 ---
      正在从数据库获取历史成绩...
      正在登录教务系统获取最新成绩...
-     --- 登录尝试 #1/10 ---
-     正在获取验证码...
-     OCR 识别结果: xxxx
-     正在尝试登录API...
-     API验证成功！
-     ...
+     已登录新教务：某某某 (2025xxxxxx) 工程2025-01班
+     成功获取到 37 条成绩记录。
+     正在比较成绩变化...
+     未检测到成绩变化。
+     --- 任务完成 ---
      ```
    - 该运行结果无敏感信息
 
@@ -206,17 +218,18 @@ GitHub Personal Access Token（个人访问令牌）是用来授权程序访问�
 ### Q1：登录失败怎么办？
 
 **可能原因：**
-1. 学号或密码错误
-   - 检查 `SWJTU_USERNAME` 和 `SWJTU_PASSWORD` 是否正确
+1. `ytoken` 已失效（最常见）
+   - 日志里会出现 `ytoken 已失效（HTTP 401）` 或 `会话已失效`
+   - 按 3.2 ① 重新从浏览器复制一次 `ytoken` 并更新 Secret 即可
+   - 程序**不会**把“登录失效”误判成“没有成绩”，所以不会误报或漏报
    
 2. 教务系统维护或关闭外网访问
-   - 查看运行日志，如果多次重试都失败
-   - 尝试在浏览器手动登录教务系统确认
+   - 尝试在浏览器手动登录 https://yhxt.swjtu.edu.cn/study/ 确认
    
-3. 验证码识别失败
-   - 项目使用 OCR 自动识别验证码
-   - 最多重试 10 次，偶尔失败是正常的
-   - 如果持续失败，等待下次自动运行
+3. 走的是 CAS 账号密码兜底方案，被风控拦了
+   - CAS 可能在密码错误多次后要求图形验证码
+   - 日志会提示“需要验证码/被风控拦截”
+   - 解决办法：改用 `YHXT_YTOKEN`（推荐），或人工在浏览器登录一次解除风控
 
 ### Q2：收不到邮件通知？
 
@@ -266,8 +279,8 @@ GitHub Personal Access Token（个人访问令牌）是用来授权程序访问�
 ### Q5：为什么有时候运行失败？
 
 **正常情况：**
-- 验证码识别失败：会自动重试 10 次
-- 教务系统临时无法访问：下次运行会自动恢复
+- 新教务接口临时抖动/超时：下次运行会自动恢复
+- `ytoken` 过期：更新一次 Secret 即可（不会误报成绩）
 - GitHub Actions 服务波动：偶尔发生
 
 **不影响使用：**
@@ -373,8 +386,8 @@ schedule:
 
 - **Python 3.12**：主要编程语言
 - **uv**：快速的 Python 包管理器
-- **requests + BeautifulSoup**：网页抓取
-- **OCR 验证码识别**：自动识别登录验证码
+- **requests**：调用新教务（yhxt）的 JSON API
+- **纯 Python AES-CBC**：复刻 CAS 登录页的密码加密（无第三方加密依赖，见 `utils/aes_cbc.py`）
 - **GitHub Gist**：数据存储
 - **SMTP**：邮件发送
 
@@ -385,11 +398,19 @@ schedule:
   └── monitor.yml          # GitHub Actions 工作流配置
 actions/
   └── index.py             # 主要业务逻辑
+api/
+  └── index.py             # Vercel Serverless 入口（可选）
 utils/
-  ├── fetcher.py          # 教务系统爬虫
-  ├── database.py         # Gist 数据存储
-  ├── notify.py           # 邮件通知
-  └── ocr.py              # 验证码识别
+  ├── yhxt.py              # 新教务客户端：登录 + 成绩接口 + 归一化
+  ├── aes_cbc.py           # 纯 Python AES-CBC（CAS 密码加密）
+  ├── fetcher.py           # 兼容门面（ScoreFetcher），委托给 yhxt.py
+  ├── database.py          # Gist 数据存储
+  ├── notify.py            # 邮件通知
+  └── ocr.py               # 旧教务验证码识别（已随迁移弃用，保留备查）
+test/
+  ├── test_yhxt.py         # 新教务客户端离线测试
+  ├── test_aes_cbc.py      # AES 向量测试
+  └── score.py             # 手动抓取/排查脚本
 ```
 
 ## 八、Gist 数据存储说明
@@ -441,56 +462,45 @@ GitHub Gist 是 GitHub 提供的代码片段托管服务，本项目使用它来
 - `daily_scores`：平时成绩列表
 
 
-## 九、OCR 验证码识别说明
+## 九、新教务（yhxt）接口与认证说明
 
-### 为什么需要 OCR？
+> 本节替代了原先的「OCR 验证码识别说明」。旧教务（jwc）已停用；新教务不发验证码，
+> 因此不需要 OCR，`utils/ocr.py` 与 `utils/templates/` 仅作历史保留。
 
-教务系统登录需要输入图形验证码，本项目机缘巧合下选择自己做 OCR 模块自动识别验证码，无需调用第三方 API，完全本地运行。
+### 认证：ytoken
 
-### OCR 工作原理
+新教务（`https://yhxt.swjtu.edu.cn`）的前端把登录令牌存在 localStorage 的 `ytoken`，
+之后所有 `/yethan/*` 请求都带请求头 `ytoken: <token>`。所以本项目只需要一个令牌。
 
-识别流程分为三个主要步骤：
+两条取令牌的路：
 
-1. **图像预处理**
-   - 灰度化：将彩色验证码转为灰度图像
-   - 二值化：将灰度图像转为黑白二值图像（阈值 94）
-   - 去噪：消除干扰线和噪点
+1. **直接给令牌**（推荐）：`YHXT_YTOKEN`，或 `YHXT_AUTH_STATE` 指向导出的 JSON。
+2. **无头 CAS 登录**（兜底）：给 `SWJTU_USERNAME`/`SWJTU_PASSWORD`，程序会
+   - 打开 `https://cas.swjtu.edu.cn/authserver/login?service=https://yhxt.swjtu.edu.cn/cas-login.html`
+   - 用页面里的 `execution` 与 `pwdEncryptSalt` 构造表单，密码按前端算法加密提交
+     （`AES-CBC/PKCS7`，key=salt，明文 = 64 个随机字符 + 密码，见 `utils/aes_cbc.py`）
+   - 跟随跳转取出 `ticket`，再请求 `/yethan/public/casCallback?ticket=...` 换回 `ytoken`
 
-2. **字符分割**
-   - 垂直投影分析：统计每列的黑色像素数量
-   - 边界检测：找到每个字符的左右边界
-   - 裁剪提取：将每个字符单独切割出来
+### 用到的成绩接口
 
-3. **模板匹配**
-   - 加载预制模板库（`utils/templates/` 目录）
-   - 滑动窗口比对：允许 ±3 像素偏移
-   - 像素级相似度计算：选择最匹配的字符
+| 用途 | 接口 | 关键字段 |
+|---|---|---|
+| 全部已出成绩（含任课教师） | `GET /yethan/score/exam-mark-all/list` | `courseName` `staffName` `mark` `markStr` `creditHour` `termName` `gradeType` `examType` |
+| 学生成绩总表（含本学期在修课程） | `GET /yethan/public/score/getAllScoreByStudentId` | `scoreAllList[]` 同样字段，未出分时 `mark=null` |
+| 会话自检 | `GET /yethan/register/student-course/info` | `studentId` `studentName` `className` |
 
-### 模板库
+程序把两张表按 `(学期, 课程代码)` 合并后归一化成统一结构：
+- 已出成绩以「成绩明细表」为准（能拿到教师名，用于生成稳定的对比 key）
+- 在修但未出分的课程来自「成绩总表」，`成绩` 为空；等出分后自然被识别为「新增总成绩」
 
-模板文件存放在 `utils/templates/` 目录下：
-- 每个字符对应一个 PNG 文件
-- 文件名即为字符内容
-- 模板来源于实际验证码样本
+### 与旧实现相比修掉的问题
 
-### 识别准确率
-
-- 程序会自动重试最多 **10 次**
-- 综合成功率较高
-
-### 识别失败怎么办？
-
-如果遇到持续识别失败：
-
-1. **等待自动重试**：程序会自动重试 10 次
-2. **等待下次运行**：20 分钟后会自动重新运行
-3. **检查日志**：查看 Actions 日志中的 OCR 识别结果
-
-### 调试模式（开发者）
-
-如需调试 OCR，可在本地运行时启用调试输出：
-- 调试文件保存在 `utils/debug_output/` 目录
-- 包含二值化结果、垂直投影图、分割字符等中间结果
+1. **不再把“登录失效”误判成“没有成绩”**：`ytoken` 失效返回 HTTP 401，
+   程序会显式报“会话已失效”并放弃本轮对比，而不是写入一份空成绩单。
+   （旧 jwc 是 302 回登录页，靠“没找到表格”判断，会误报。）
+2. **不再依赖验证码 OCR**：少一条最不稳定的链路，也少了 PIL 等重依赖。
+3. **编码问题消失**：新教务返回 JSON（UTF-8），不再有 `Content-Type` 缺 charset
+   导致中文课程名乱码、进而让每门课都被判为“新增”的问题。
 
 ## 十、邮件成绩通知说明
 
@@ -545,12 +555,18 @@ GitHub Gist 是 GitHub 提供的代码片段托管服务，本项目使用它来
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
+| `YHXT_YTOKEN` | 无 | 新教务登录令牌（**强烈推荐**，见 3.2 ①）。与下面两个账号密码互斥，优先使用。 |
+| `YHXT_AUTH_STATE` | 无 | 浏览器导出的认证态 JSON 路径，从中读取 `ytoken`。 |
 | `SMTP_TIMEOUT` | `30` | 邮件服务器连接/发送超时（秒）。不设超时时，SMTP 卡住会一直挂到 Actions 6 小时上限。 |
 | `GIST_API_TIMEOUT` | `20` | GitHub Gist API 请求超时（秒）。历史成绩读写失败会中止本轮对比，而不是误判为「没有历史」。 |
-| `JWC_BASE_URL` | `http://jwc.swjtu.edu.cn` | 教务系统地址。校外访问受限或教务调整域名时可覆盖，仍会自动探测实际协议。 |
+| `YHXT_API_TIMEOUT` | `20` | 新教务 API 请求超时（秒）。 |
+| `YHXT_BASE` | `https://yhxt.swjtu.edu.cn/yethan` | 新教务 API 基址，域名调整时可覆盖。 |
+| `CAS_BASE` | `https://cas.swjtu.edu.cn/authserver` | 统一认证基址，走账号密码兜底登录时使用。 |
+| `YHXT_SERVICE_URL` | `https://yhxt.swjtu.edu.cn/cas-login.html` | CAS 登录的 `service` 参数，一般无需修改。 |
 
 > 说明：读取或保存历史成绩失败时，任务会**明确报错退出**而不是静默按「无历史」处理——
-> 后者会把整份成绩单当成新增并群发通知。
+> 后者会把整份成绩单当成新增并群发通知。会话失效（HTTP 401）同样会中止本轮，
+> 不会写入一份空成绩单。
 
 ## 十一、致谢与支持
 
