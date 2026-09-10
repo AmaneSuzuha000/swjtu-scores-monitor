@@ -10,22 +10,34 @@ GIST_FILENAME = os.getenv("GIST_NAME", "scores.json")
 # 双重保险
 TARGET_DESCRIPTION = "just_for_swjtu_scores_monitor"
 
-if not GIST_PAT:
-    raise ValueError("严重错误: 必须设置 GIST_PAT 环境变量")
-
-# 确保文件名以 .json 结尾
 if not GIST_FILENAME.endswith(".json"):
     GIST_FILENAME += ".json"
+
+
+def _require_pat() -> str:
+    """惰性校验 GIST_PAT。
+
+    原实现在 import 时就 raise，导致任何 `from utils import database` 的入口
+    （包括只需要检查登录有效性的 `actions/index.py check`）都必须先配好 Gist，
+    否则一导入就崩。凭据缺失应该在**真正要读写 Gist 时**才报错。
+    """
+    if not GIST_PAT:
+        raise ValueError("严重错误: 必须设置 GIST_PAT 环境变量")
+    return GIST_PAT
+
 
 _CACHED_GIST_ID = None
 
 BASE_URL = "https://api.github.com/gists"
 # GitHub API 超时（秒）：缺省时 requests 会永久阻塞，把整条 Actions/Vercel 任务挂死。
 HTTP_TIMEOUT = int(os.getenv("GIST_API_TIMEOUT", "20"))
-HEADERS = {
-    "Authorization": f"token {GIST_PAT}",
-    "Accept": "application/vnd.github.v3+json"
-}
+
+
+def _headers() -> dict[str, str]:
+    return {
+        "Authorization": f"token {_require_pat()}",
+        "Accept": "application/vnd.github.v3+json",
+    }
 
 def _get_or_create_gist_id():
     """
@@ -37,11 +49,12 @@ def _get_or_create_gist_id():
     if _CACHED_GIST_ID:
         return _CACHED_GIST_ID
 
+    _require_pat()  # 真正要用 Gist 时才要求凭据
     print(f"--- 正在查找 Gist... ---")
 
     try:
         # 获取用户的所有 Gist
-        response = requests.get(BASE_URL, headers=HEADERS, timeout=HTTP_TIMEOUT)
+        response = requests.get(BASE_URL, headers=_headers(), timeout=HTTP_TIMEOUT)
         response.raise_for_status()
         gists = response.json()
 
@@ -74,7 +87,7 @@ def _get_or_create_gist_id():
         }
         
         create_response = requests.post(
-            BASE_URL, headers=HEADERS, json=create_payload, timeout=HTTP_TIMEOUT
+            BASE_URL, headers=_headers(), json=create_payload, timeout=HTTP_TIMEOUT
         )
         create_response.raise_for_status()
         
@@ -105,7 +118,7 @@ def save_scores(scores: list, ttl_seconds: int = None):
         }
         
         response = requests.patch(
-            update_url, headers=HEADERS, json=payload, timeout=HTTP_TIMEOUT
+            update_url, headers=_headers(), json=payload, timeout=HTTP_TIMEOUT
         )
         response.raise_for_status()
         
@@ -120,7 +133,7 @@ def get_latest_scores():
         gist_id = _get_or_create_gist_id()
         get_url = f"{BASE_URL}/{gist_id}"
         
-        response = requests.get(get_url, headers=HEADERS, timeout=HTTP_TIMEOUT)
+        response = requests.get(get_url, headers=_headers(), timeout=HTTP_TIMEOUT)
         response.raise_for_status()
         
         data = response.json()

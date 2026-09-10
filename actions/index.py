@@ -8,16 +8,38 @@ from utils.fetcher import ScoreFetcher
 from utils import database
 
 
+def _yhxt_credentials_ready() -> tuple[bool, str]:
+    """新教务凭据是否就绪。
+
+    认证来源优先级与 utils.yhxt.build_client_from_env 保持一致：
+    ytoken > auth-state 文件 > CAS 账号密码。
+    """
+    if (os.environ.get("YHXT_YTOKEN") or "").strip():
+        return True, "ytoken"
+    state = (os.environ.get("YHXT_AUTH_STATE") or "").strip()
+    if state and Path(state).exists():
+        return True, f"auth-state:{state}"
+    if (os.environ.get("SWJTU_USERNAME") or "").strip() and os.environ.get("SWJTU_PASSWORD"):
+        return True, "cas-password"
+    return False, ""
+
+
+def _require_credentials() -> None:
+    ok, _ = _yhxt_credentials_ready()
+    if not ok:
+        raise Exception({
+            "status": "error",
+            "message": "未配置新教务凭据：请设置 YHXT_YTOKEN（推荐）、"
+                       "YHXT_AUTH_STATE，或 SWJTU_USERNAME/SWJTU_PASSWORD。",
+        })
+
+
 def fetch_scores():
     """获取成绩并存储到数据库"""
-    username = os.environ.get("SWJTU_USERNAME")
-    password = os.environ.get("SWJTU_PASSWORD")
-
-    if not username or not password:
-        raise Exception({"status": "error", "message": "未配置学号或密码"})
+    _require_credentials()
 
     print("--- 任务开始: 准备获取成绩 ---")
-    fetcher = ScoreFetcher(username=username, password=password)
+    fetcher = ScoreFetcher()
 
     try:
         # 1. 登录
@@ -56,41 +78,33 @@ def fetch_scores():
 
 
 def check_login_connection():
-    """检查当前配置的学号和密码是否能成功登录教务系统"""
-    username = os.environ.get("SWJTU_USERNAME")
-    password = os.environ.get("SWJTU_PASSWORD")
-    
-    if not username or not password:
-        raise Exception({"status": "error", "message": "未配置学号或密码"})
-    
+    """检查当前配置的凭据是否能成功访问新教务成绩接口"""
+    _require_credentials()
+
     try:
-        fetcher = ScoreFetcher(username=username, password=password)
+        fetcher = ScoreFetcher()
         login_success = fetcher.login()
     except Exception as e:
         print(f"检查登录有效性时发生错误: {e}")
         raise Exception({"status": "error", "message": f"检查登录有效性时发生内部错误: {str(e)}"})
     
     if login_success:
-        return {"status": "success", "message": "登录成功，学号和密码有效。"}
+        return {"status": "success", "message": "凭据有效，已能读取新教务成绩接口。"}
     else:
-        raise Exception({"status": "error", "message": "登录失败，请检查学号和密码是否正确；或为教务处服务器外网访问被关闭。"})
+        raise Exception({"status": "error", "message": "凭据无效或会话已失效：请更新 YHXT_YTOKEN，或检查账号密码与风控状态。"})
     
 def monitor_scores():
     """监控成绩变化，如有变动则发送邮件通知"""
     from utils.notify import send_email
-    
-    username = os.environ.get("SWJTU_USERNAME")
-    password = os.environ.get("SWJTU_PASSWORD")
-    
+
+    _require_credentials()
+
     # 邮件配置
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "465"))
     notify_email = os.environ.get("NOTIFY_EMAIL")
     email_password = os.environ.get("EMAIL_PASSWORD")
-    
-    if not username or not password:
-        raise Exception({"status": "error", "message": "未配置学号或密码"})
-    
+
     if not smtp_host or not notify_email or not email_password:
         raise Exception({"status": "error", "message": "未配置邮件环境变量"})
     
@@ -109,7 +123,7 @@ def monitor_scores():
         
         # 2. 登录并获取最新成绩
         print("正在登录教务系统获取最新成绩...")
-        fetcher = ScoreFetcher(username=username, password=password)
+        fetcher = ScoreFetcher()
         login_success = fetcher.login()
         
         if not login_success:

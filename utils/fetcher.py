@@ -1,378 +1,122 @@
-# scraper/fetcher.py
-import requests
-from bs4 import BeautifulSoup
-import time
-import logging
+"""成绩抓取门面（新教务 yhxt）。
 
-from pathlib import Path
-import sys, os
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils import ocr  # 导入自定义OCR模块
-from urllib.parse import urlparse
+历史：本模块原先抓 jwc 旧教务（/vatuu），依赖 CAS cookie + 验证码 OCR，
+成绩是 HTML 表格（table3）。旧教务已停用，这里改为新教务 yhxt 的 JSON API，
+但**对外接口保持不变**（ScoreFetcher.login / get_all_scores /
+get_normal_scores / get_combined_scores），这样 actions/ 与 api/ 的下游逻辑
+（变化对比、邮件渲染、Gist 存储）一行都不用改。
 
-# --- 配置与常量 ---
-BASE_URL = os.getenv("JWC_BASE_URL", "http://jwc.swjtu.edu.cn")
+新教务的接口与认证细节见 utils/yhxt.py。
+"""
 
+from __future__ import annotations
 
-def _detect_protocol(base_url, timeout=5):
-    """跟随重定向探测教务实际使用的协议。
+import os
+import sys
 
-    探测失败（网络不可达、超时）时返回原值而不抛出：这段代码在 import 时执行，
-    一旦抛异常整个模块就无法导入，CI 和测试会直接崩掉，而教务临时不可达
-    本来只应该让当次任务失败。
-    """
-    try:
-        probe = requests.get(
-            base_url,
-            timeout=timeout,
-            allow_redirects=True,  # 自动跟随重定向
-            verify=True,  # 验证 SSL 证书
-        )
-    except Exception as e:
-        print(f"协议探测失败，沿用 {base_url}: {e}")
-        return base_url
-
-    # 解析最终的 URL
-    final_protocol = urlparse(probe.url).scheme
-    if final_protocol and final_protocol != urlparse(base_url).scheme:
-        detected = f"{final_protocol}://{urlparse(base_url).netloc}"
-        print(f"检测到教务使用 {final_protocol}，已切换为 {detected} 访问。")
-        return detected
-    return base_url
-
-
-BASE_URL = _detect_protocol(BASE_URL)
-
-LOGIN_PAGE_URL = f"{BASE_URL}/service/login.html"
-LOGIN_API_URL = f"{BASE_URL}/vatuu/UserLoginAction"
-CAPTCHA_URL = f"{BASE_URL}/vatuu/GetRandomNumberToJPEG"
-LOADING_URL = f"{BASE_URL}/vatuu/UserLoadingAction"
-ALL_SCORES_URL = f"{BASE_URL}/vatuu/StudentScoreInfoAction?setAction=studentScoreQuery&viewType=studentScore&orderType=submitDate&orderValue=desc"
-NORMAL_SCORES_URL = f"{BASE_URL}/vatuu/StudentScoreInfoAction?setAction=studentNormalMark"
-
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-    'Origin': BASE_URL,
-}
-
-# jwc 的 /vatuu 走 CAS cookie 会话：会话失效时不返回 4xx，而是 302 回登录页
-# 或直接回填登录页文本，只按“表格没找到”处理会把登录失效误报成没有成绩。
-LOGIN_MARKERS = (
-    "/service/login.html",
-    "/authserver/login",
-    "统一身份认证",
-    "请先登录",
+from utils.yhxt import (
+    YhxtAuthError,
+    YhxtClient,
+    YhxtError,
+    build_client_from_env,
+    fetch_normalized,
+    refresh_ytoken_if_needed,
 )
 
 
-def normalize_response_encoding(response):
-    """jwc 的 Content-Type 不带 charset，requests 会退回 ISO-8859-1，
-    中文课程名/教师名因此乱码；而这些字符串正是变化对比用的字典 key，
-    乱码会让每门课都被判定为“新增”。
-    """
-    if not response.encoding or response.encoding.lower() == "iso-8859-1":
-        response.encoding = response.apparent_encoding or "utf-8"
-    return response
-
-
-def looks_logged_out(response):
-    """响应是否被重定向回了登录页（会话已失效）。"""
-    final_url = response.url or ""
-    return any(marker in final_url for marker in LOGIN_MARKERS)
-
-
 class ScoreFetcher:
-    def __init__(self, username, password):
-        self.username = username
-        self.password = password
-        self.session = requests.Session()
-        self.session.headers.update(HEADERS)
+    """保持旧签名的门面：真正的实现委托给 utils.yhxt。
+
+    username/password 现在是**可选的**——新教务优先用 ytoken；
+    只有在需要无头 CAS 登录时才用到账号密码。
+    """
+
+    def __init__(self, username: str | None = None, password: str | None = None,
+                 *, ytoken: str | None = None):
+        self.username = username or ""
+        self.password = password or ""
+        self.ytoken = (ytoken or "").strip()
+        self.client: YhxtClient | None = None
         self.is_logged_in = False
 
-    def login(self, max_retries=10, retry_delay=1):
-        for attempt in range(1, max_retries + 1):
-            print(f"--- 登录尝试 #{attempt}/{max_retries} ---")
-            
-            try:
-                # 1. 获取并识别验证码
-                print("正在获取验证码...")
-                captcha_params = {'test': int(time.time() * 1000)}
-                response = self.session.get(CAPTCHA_URL, params=captcha_params, timeout=10)
-                response.raise_for_status()
-                captcha_code = ocr.classify(response.content)
-                print(f"OCR 识别结果: {captcha_code}")
-                if not captcha_code or len(captcha_code) != 4:
-                    print("验证码识别失败，跳过本次尝试。")
-                    if attempt < max_retries: time.sleep(retry_delay)
-                    continue
+    # ------------------------------------------------------------------
+    def login(self, max_retries: int = 10, retry_delay: int = 1) -> bool:
+        """建立可用的成绩查询会话。
 
-                # 2. 尝试API登录
-                print("正在尝试登录API...")
-                login_payload = { 'username': self.username, 'password': self.password, 'ranstring': captcha_code, 'url': '', 'returnType': '', 'returnUrl': '', 'area': '' }
-                response = self.session.post(LOGIN_API_URL, data=login_payload, headers={'Referer': LOGIN_PAGE_URL}, timeout=10)
-                response.raise_for_status()
-                login_result = response.json()
-
-                if login_result.get('loginStatus') == '1':
-                    print(f"API验证成功！{login_result.get('loginMsg')[0:5]}")
-                    print("正在访问加载页面以建立完整会话...")
-                    self.session.get(LOADING_URL, headers={'Referer': LOGIN_PAGE_URL}, timeout=10)
-                    print("会话建立成功，已登录。")
-                    self.is_logged_in = True
-                    return True
-                else:
-                    print(f"登录API失败: {login_result.get('loginMsg', '未知错误')}")
-            
-            except Exception as e:
-                print(f"登录过程中发生异常: {e}")
-
-            if attempt < max_retries:
-                print(f"等待 {retry_delay} 秒后重试...")
-                time.sleep(retry_delay)
-        
-        print(f"\n登录失败 {max_retries} 次，程序终止。")
-        return False
-
-    def get_all_scores(self):
-        if not self.is_logged_in:
-            print("错误：未登录。")
-            return None
-
-        print("\n正在查询全部成绩记录...")
-        try:
-            response = self.session.get(ALL_SCORES_URL, headers={'Referer': LOADING_URL}, timeout=15)
-            response.raise_for_status()
-            normalize_response_encoding(response)
-
-            if looks_logged_out(response):
-                print("错误：会话已失效（被重定向回登录页），本次不按无成绩处理。")
-                self.is_logged_in = False
-                return None
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-            score_table = soup.find('table', id='table3')
-            if not score_table:
-                print("错误：未找到全部成绩表格。")
-                return None
-
-            all_rows_data = []
-            header = [th.text.strip() for th in score_table.find('tr').find_all('th')]
-            
-            for row in score_table.find_all('tr')[1:]:
-                cols = [ele.text.strip() for ele in row.find_all('td')]
-                if len(cols) == len(header):
-                    all_rows_data.append(dict(zip(header, cols)))
-            
-            print(f"成功获取到 {len(all_rows_data)} 条总成绩记录。")
-            return all_rows_data
-
-        except Exception as e:
-            print(f"获取全部成绩时出错: {e}")
-            return None
-
-    def get_normal_scores(self):
-        if not self.is_logged_in:
-            print("错误：未登录。")
-            return None
-
-        print("\n正在查询平时成绩明细...")
-        try:
-            response = self.session.get(NORMAL_SCORES_URL, headers={'Referer': ALL_SCORES_URL}, timeout=15)
-            response.raise_for_status()
-            normalize_response_encoding(response)
-
-            if looks_logged_out(response):
-                print("错误：会话已失效（被重定向回登录页），本次不按无成绩处理。")
-                self.is_logged_in = False
-                return None
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            score_table = soup.find('table', id='table3')
-            if not score_table:
-                print("错误：未找到平时成绩表格。")
-                return None
-            
-            normal_scores_data = []
-            current_course_info = {}
-            for row in score_table.find_all('tr')[1:]:
-                cols = row.find_all('td')
-                if len(cols) == 11:
-                    course_name = cols[3].text.strip()
-                    if not current_course_info or current_course_info.get("课程名称") != course_name:
-                        if current_course_info:
-                            normal_scores_data.append(current_course_info)
-                        current_course_info = {
-                            "课程名称": course_name,
-                            "教师": cols[5].text.strip(),
-                            "详情": []
-                        }
-                    
-                    current_course_info["详情"].append({
-                        "平时成绩名称": cols[6].text.strip(),
-                        "成绩": cols[8].text.strip(),
-                        "占比": cols[7].text.strip(),
-                        "提交时间": cols[10].text.strip()
-                    })
-                
-                elif len(cols) == 1 and cols[0].get('colspan') == '11':
-                    if current_course_info:
-                        current_course_info["总结"] = cols[0].text.strip()
-            
-            if current_course_info: # 添加最后一个课程
-                normal_scores_data.append(current_course_info)
-
-            print(f"成功获取到 {len(normal_scores_data)} 门课程的平时成绩明细。")
-            return normal_scores_data
-
-        except Exception as e:
-            print(f"获取平时成绩时出错: {e}")
-            return None
-
-    def get_combined_scores(self):
+        旧教务要过验证码并重试 10 次；新教务用 token，失败基本都是凭据问题，
+        重试没有意义（CAS 连续失败反而会触发风控），因此参数保留但只尝试一次。
         """
-        获取总成绩和平时成绩，并将它们合并。
-        """
-        if not self.is_logged_in:
-            print("错误：未登录。")
-            return None
-
-        all_scores = self.get_all_scores()
-        time.sleep(1) # 模拟人类行为
-        normal_scores = self.get_normal_scores()
-
-        # 如果两个都没获取到，才算失败
-        if not all_scores and not normal_scores:
-            print("未能获取任何成绩数据。")
-            raise Exception("未能获取总成绩和平时成绩。")
-
-        # 初始化空列表
-        if not all_scores:
-            print("未获取到总成绩，但有平时成绩数据。")
-            all_scores = []
-        
-        if not normal_scores:
-            print("未获取到平时成绩数据。")
-            normal_scores = []
-
-        # 创建一个快速查找平时成绩的字典
-        # key: (课程名称, 教师)
-        normal_scores_map = {(ns['课程名称'], ns['教师']): {
-            '详情': ns['详情'],
-            '总结': ns.get('总结')  # 包含summary信息
-        } for ns in normal_scores}
-        
-        # 记录已处理的课程
-        processed_keys = set()
-        
-        # 遍历总成绩，将平时成绩详情合并进去
-        for score_record in all_scores:
-            key = (score_record['课程名称'], score_record['教师'])
-            processed_keys.add(key)
-            
-            if key in normal_scores_map:
-                normal_data = normal_scores_map[key]
-                score_record['平时成绩详情'] = normal_data['详情']
-                score_record['平时成绩总结'] = normal_data['总结']
+        try:
+            if self.ytoken:
+                self.client = YhxtClient(self.ytoken)
             else:
-                score_record['平时成绩详情'] = None
-                score_record['平时成绩总结'] = None
+                self.client = build_client_from_env()
+                if self.username and self.password:
+                    # 让 build_client_from_env 之外的显式账号密码也生效
+                    os.environ.setdefault("SWJTU_USERNAME", self.username)
+                    os.environ.setdefault("SWJTU_PASSWORD", self.password)
+        except YhxtError as exc:
+            print(f"登录失败: {exc}")
+            return False
 
-        # 添加只有平时成绩没有总成绩的课程
-        for normal_score in normal_scores:
-            key = (normal_score['课程名称'], normal_score['教师'])
-            if key not in processed_keys:
-                # 只需要关键字段，其他字段通过 .get() 访问时会返回 None
-                all_scores.append({
-                    '课程名称': normal_score['课程名称'],
-                    '教师': normal_score['教师'],
-                    '平时成绩详情': normal_score['详情'],
-                    '平时成绩总结': normal_score.get('总结')
-                })
+        if not self.client.validate():
+            try:
+                self.client = refresh_ytoken_if_needed(self.client)
+            except YhxtError as exc:
+                print(f"会话不可用: {exc}")
+                return False
 
-        print(f"总成绩与平时成绩合并完成。共 {len(all_scores)} 门课程。")
-        return all_scores
-   
-import requests
-from urllib.parse import urlparse
+        info = self.client.student_info()
+        print(f"已登录新教务：{info.get('studentName')} "
+              f"({info.get('studentId')}) {info.get('className')}")
+        self.is_logged_in = True
+        return True
 
-def detect_base_url(domain, test_path='/', timeout=5):
-    """
-    自动检测网站实际使用的协议（HTTP/HTTPS）
-    通过尝试访问并跟随重定向来判断
-    
-    Args:
-        domain: 域名，如 'jwc.swjtu.edu.cn'
-        test_path: 测试路径，默认为根路径
-        timeout: 超时时间（秒）
-    
-    Returns:
-        str: 实际使用的 BASE_URL，如 'http://jwc.swjtu.edu.cn'
-    """
-    print(f"🔍 正在检测 {domain} 的访问协议...")
-    
-    # 优先尝试 HTTPS（现代标准）
-    for protocol in ['https', 'http']:
-        test_url = f"{protocol}://{domain}{test_path}"
-        
+    # ------------------------------------------------------------------
+    def get_all_scores(self) -> list[dict] | None:
+        """全部成绩（新教务：成绩明细 + 在修课程总表合并后归一化）。"""
+        if not self.is_logged_in or self.client is None:
+            print("错误：未登录。")
+            return None
         try:
-            print(f"  📡 尝试 {protocol.upper()} ...")
-            
-            # 发起请求，允许重定向
-            response = requests.get(
-                test_url,
-                timeout=timeout,
-                allow_redirects=True,  # 自动跟随重定向
-                verify=True  # 验证 SSL 证书
-            )
-            
-            # 解析最终的 URL
-            final_url = response.url
-            parsed = urlparse(final_url)
-            final_protocol = parsed.scheme
-            final_domain = parsed.netloc
-            
-            # 检查是否发生了重定向
-            if response.history:
-                print(f"  ↪️  发生了 {len(response.history)} 次重定向:")
-                for i, resp in enumerate(response.history, 1):
-                    print(f"      {i}. {resp.url} → {resp.status_code} {resp.reason}")
-            
-            print(f"  ✅ 最终访问: {final_url}")
-            print(f"  🔐 使用协议: {final_protocol.upper()}")
-            print(f"  📊 状态码: {response.status_code}")
-            
-            # 检测到协议降级
-            if protocol == 'https' and final_protocol == 'http':
-                print(f"  ⚠️  服务器将 HTTPS 重定向到 HTTP")
-                print(f"  💡 建议直接使用 HTTP 协议以避免 Cookie 问题")
-            
-            # 构造 BASE_URL
-            base_url = f"{final_protocol}://{final_domain}"
-            
-            print(f"\n✨ 检测完成！使用: {base_url}\n")
-            return base_url
-            
-        except requests.exceptions.SSLError as e:
-            print(f"  ❌ SSL 证书错误")
-            print(f"  💡 {protocol.upper()} 不可用，继续尝试...")
-            continue
-            
-        except requests.exceptions.ConnectionError as e:
-            print(f"  ❌ 连接失败")
-            print(f"  💡 {protocol.upper()} 无法访问，继续尝试...")
-            continue
-            
-        except requests.exceptions.Timeout:
-            print(f"  ❌ 连接超时（>{timeout}秒）")
-            continue
-            
-        except Exception as e:
-            print(f"  ❌ 未知错误: {type(e).__name__}: {e}")
-            continue
-    
-    # 所有协议都失败，默认使用 HTTP
-    print(f"⚠️  无法自动检测，默认使用: http://{domain}\n")
-    return f"http://{domain}"
+            rows = fetch_normalized(self.client)
+        except YhxtAuthError as exc:
+            # 认证失效绝不能退化成“没有成绩”，否则会被当成成绩被清空
+            print(f"错误：会话已失效（{exc}），本次不按无成绩处理。")
+            self.is_logged_in = False
+            raise
+        except YhxtError as exc:
+            print(f"获取成绩时出错: {exc}")
+            return None
+
+        print(f"成功获取到 {len(rows)} 条成绩记录。")
+        return rows
+
+    def get_normal_scores(self) -> list[dict] | None:
+        """平时成绩明细。
+
+        新教务不提供“平时成绩名称/占比/提交时间”这种逐条明细，只有
+        平时成绩/期末成绩两个聚合分（已并入 get_all_scores 的每条记录）。
+        保留此方法是为了兼容旧调用方：返回空列表（有数据但无独立明细），
+        而不是 None（表示读取失败）。
+        """
+        if not self.is_logged_in:
+            print("错误：未登录。")
+            return None
+        print("新教务无独立平时成绩明细接口，聚合分已包含在总成绩记录中。")
+        return []
+
+    def get_combined_scores(self) -> list[dict] | None:
+        """兼容旧签名：新教务的总成绩记录里已经包含平时/期末聚合分。"""
+        return self.get_all_scores()
+
 
 if __name__ == "__main__":
-    print(detect_base_url("jwc.swjtu.edu.cn"))
+    sf = ScoreFetcher(os.environ.get("SWJTU_USERNAME"), os.environ.get("SWJTU_PASSWORD"))
+    if sf.login():
+        rows = sf.get_combined_scores() or []
+        print(f"获取到 {len(rows)} 条成绩记录")
+        for r in rows[:5]:
+            print(r)
+    else:
+        sys.exit(1)

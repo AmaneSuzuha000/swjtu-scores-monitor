@@ -14,6 +14,17 @@ app = FastAPI()
 
 api_key_query = APIKeyQuery(name="secret", auto_error=False)
 
+
+def _yhxt_credentials_ready() -> bool:
+    """新教务凭据是否就绪：ytoken > auth-state 文件 > CAS 账号密码。"""
+    if (os.environ.get("YHXT_YTOKEN") or "").strip():
+        return True
+    state = (os.environ.get("YHXT_AUTH_STATE") or "").strip()
+    if state and Path(state).exists():
+        return True
+    return bool((os.environ.get("SWJTU_USERNAME") or "").strip()
+                and os.environ.get("SWJTU_PASSWORD"))
+
 def get_api_key(api_key: str = Security(api_key_query)):
     expected_api_key = os.environ.get("API_SECRET_TOKEN")
     if not expected_api_key:
@@ -26,14 +37,12 @@ def get_api_key(api_key: str = Security(api_key_query)):
 @app.get("/api/fetch-scores") 
 @app.post("/api/fetch-scores")
 async def trigger_fetch_scores(api_key: str = Security(get_api_key)):
-    username = os.environ.get("SWJTU_USERNAME")
-    password = os.environ.get("SWJTU_PASSWORD")
-
-    if not username or not password:
-        raise HTTPException(status_code=500, detail="服务器未配置学号或密码环境变量")
+    if not _yhxt_credentials_ready():
+        raise HTTPException(status_code=500, detail="服务器未配置新教务凭据（YHXT_YTOKEN 等）")
 
     print("--- 任务开始: 准备获取成绩 ---")
-    fetcher = ScoreFetcher(username=username, password=password)
+    fetcher = ScoreFetcher(username=os.environ.get("SWJTU_USERNAME"),
+                           password=os.environ.get("SWJTU_PASSWORD"))
 
     try:
         # 1. 登录
@@ -77,40 +86,35 @@ def read_root():
 @app.get("/api/check-login-usability") 
 @app.post("/api/check-login-usability")
 async def trigger_check_login_usability(api_key: str = Security(get_api_key)):
-    """检查当前配置的学号和密码是否能成功登录教务系统"""
-    username = os.environ.get("SWJTU_USERNAME")
-    password = os.environ.get("SWJTU_PASSWORD")
-    if not username or not password:
-        raise HTTPException(status_code=500, detail="服务器未配置学号或密码环境变量")
+    """检查当前配置的凭据是否能成功访问新教务成绩接口"""
+    if not _yhxt_credentials_ready():
+        raise HTTPException(status_code=500, detail="服务器未配置新教务凭据（YHXT_YTOKEN 等）")
     try:
-        fetcher = ScoreFetcher(username=username, password=password)
+        fetcher = ScoreFetcher()
         login_success = fetcher.login()
     except Exception as e:
         print(f"检查登录有效性时发生错误: {e}")
         raise HTTPException(status_code=500, detail=f"检查登录有效性时发生内部错误: {str(e)}")
     if login_success:
-        return {"status": "success", "message": "登录成功，学号和密码有效。"}
+        return {"status": "success", "message": "凭据有效，已能读取新教务成绩接口。"}
     else:
-        raise HTTPException(status_code=500, detail=f"登录失败，请检查学号和密码是否正确；或为教务处服务器外网访问被关闭。")
+        raise HTTPException(status_code=500, detail="凭据无效或会话已失效：请更新 YHXT_YTOKEN，或检查账号密码与风控状态。")
     
 @app.get("/api/monitor-scores")
 @app.post("/api/monitor-scores")
 async def trigger_monitor_scores(api_key: str = Security(get_api_key)):
     """监控成绩变化，如有变动则发送邮件通知"""
     from utils.notify import send_email
-    
-    username = os.environ.get("SWJTU_USERNAME")
-    password = os.environ.get("SWJTU_PASSWORD")
-    
+
+    if not _yhxt_credentials_ready():
+        raise HTTPException(status_code=500, detail="服务器未配置新教务凭据（YHXT_YTOKEN 等）")
+
     # 邮件配置
     smtp_host = os.environ.get("SMTP_HOST")
     smtp_port = int(os.environ.get("SMTP_PORT", "465"))
     notify_email = os.environ.get("NOTIFY_EMAIL")
     email_password = os.environ.get("EMAIL_PASSWORD")
-    
-    if not username or not password:
-        raise HTTPException(status_code=500, detail="服务器未配置学号或密码环境变量")
-    
+
     if not smtp_host or not notify_email or not email_password:
         raise HTTPException(status_code=500, detail="服务器未配置邮件环境变量")
     
@@ -129,7 +133,7 @@ async def trigger_monitor_scores(api_key: str = Security(get_api_key)):
         
         # 2. 登录并获取最新成绩
         print("正在登录教务系统获取最新成绩...")
-        fetcher = ScoreFetcher(username=username, password=password)
+        fetcher = ScoreFetcher()
         login_success = fetcher.login()
         
         if not login_success:
