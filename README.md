@@ -70,7 +70,11 @@
   未配置 `YHXT_YTOKEN` 时，程序会走无头 CAS 登录自动换 token。
   CAS 有风控（可能出现图形验证码），因此仅建议作为后备方案。
 
-- `YHXT_AUTH_STATE`（可选）：指向浏览器导出的 auth-state JSON 文件路径，程序会从里面读 `ytoken`。
+- `YHXT_AUTH_STATE`（可选）：另一条取 token 的路，两种写法都支持：
+  - **内联 JSON 内容**（Actions 用这个，因为 runner 上没有导出的文件）：
+    把整个 auth-state JSON 原样填进 Secret 即可
+  - **文件路径**（本地排查用）：指向浏览器导出的 auth-state JSON 文件
+  两种写法都从里面读 `ytoken` / `token` 字段。
 
 #### ② SMTP_HOST、NOTIFY_EMAIL 和 EMAIL_PASSWORD
 
@@ -474,7 +478,7 @@ GitHub Gist 是 GitHub 提供的代码片段托管服务，本项目使用它来
 
 两条取令牌的路：
 
-1. **直接给令牌**（推荐）：`YHXT_YTOKEN`，或 `YHXT_AUTH_STATE` 指向导出的 JSON。
+1. **直接给令牌**（推荐）：`YHXT_YTOKEN`，或把 auth-state JSON 内容填进 `YHXT_AUTH_STATE`。
 2. **无头 CAS 登录**（兜底）：给 `SWJTU_USERNAME`/`SWJTU_PASSWORD`，程序会
    - 打开 `https://cas.swjtu.edu.cn/authserver/login?service=https://yhxt.swjtu.edu.cn/cas-login.html`
    - 用页面里的 `execution` 与 `pwdEncryptSalt` 构造表单，密码按前端算法加密提交
@@ -556,7 +560,7 @@ GitHub Gist 是 GitHub 提供的代码片段托管服务，本项目使用它来
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `YHXT_YTOKEN` | 无 | 新教务登录令牌（**强烈推荐**，见 3.2 ①）。与下面两个账号密码互斥，优先使用。 |
-| `YHXT_AUTH_STATE` | 无 | 浏览器导出的认证态 JSON 路径，从中读取 `ytoken`。 |
+| `YHXT_AUTH_STATE` | 无 | auth-state 的**内联 JSON 内容**（Actions）或**文件路径**（本地），从中读取 `ytoken`。 |
 | `SMTP_TIMEOUT` | `30` | 邮件服务器连接/发送超时（秒）。不设超时时，SMTP 卡住会一直挂到 Actions 6 小时上限。 |
 | `GIST_API_TIMEOUT` | `20` | GitHub Gist API 请求超时（秒）。历史成绩读写失败会中止本轮对比，而不是误判为「没有历史」。 |
 | `YHXT_API_TIMEOUT` | `20` | 新教务 API 请求超时（秒）。 |

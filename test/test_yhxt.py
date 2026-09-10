@@ -170,6 +170,35 @@ def test_auth_state_loader():
         raise AssertionError("缺少 ytoken 字段时必须报错")
 
 
+def test_auth_state_accepts_inline_json():
+    """GitHub Actions 上只有 Secret 文本，没有文件——内联 JSON 必须可用。"""
+    assert load_ytoken_from_auth_state('{"ytoken":"tok-inline"}') == "tok-inline"
+    assert load_ytoken_from_auth_state('  {"token": "tok-alt"}  ') == "tok-alt"
+    print("ok auth-state inline JSON")
+
+
+def test_auth_state_rejects_unusable_value():
+    """路径不存在、文本又不是 JSON 时必须明确报错，而不是静默当作没有凭据。"""
+    try:
+        load_ytoken_from_auth_state(r"Z:\definitely\missing\auth.json")
+    except YhxtAuthError as exc:
+        assert "无法" in str(exc) or "不是" in str(exc)
+        print("ok auth-state unusable value -> YhxtAuthError")
+        return
+    raise AssertionError("不可用的 auth-state 必须报错")
+
+
+def test_build_client_prefers_inline_state(monkeypatch):
+    """YHXT_YTOKEN > YHXT_AUTH_STATE(内联 JSON) 的优先级必须成立。"""
+    from utils.yhxt import build_client_from_env
+    monkeypatch.setenv("YHXT_YTOKEN", "tok-direct")
+    monkeypatch.setenv("YHXT_AUTH_STATE", '{"ytoken":"tok-state"}')
+    assert build_client_from_env().ytoken == "tok-direct"
+    monkeypatch.delenv("YHXT_YTOKEN")
+    assert build_client_from_env().ytoken == "tok-state"
+    print("ok credential precedence (YHXT_YTOKEN > inline AUTH_STATE)")
+
+
 def test_client_requires_token():
     try:
         YhxtClient("")

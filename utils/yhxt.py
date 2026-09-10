@@ -193,14 +193,39 @@ def _dump_cookies(session: requests.Session) -> list[dict]:
     return out
 
 
-def load_ytoken_from_auth_state(path: str | Path) -> str:
-    """从已有的 auth-state JSON 里取 ytoken（兼容浏览器导出的多种字段名）。"""
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+def parse_auth_state(raw: str, *, source: str = "auth-state") -> str:
+    """从 auth-state 文本里取出 ytoken（兼容浏览器导出的多种字段名）。"""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise YhxtAuthError(f"{source} 不是合法 JSON：{exc}") from exc
+    if not isinstance(data, dict):
+        raise YhxtAuthError(f"{source} 的顶层不是 JSON 对象")
     for key in ("ytoken", "token", "YHXT_YTOKEN"):
         val = data.get(key)
         if isinstance(val, str) and val:
             return val
-    raise YhxtAuthError(f"{path} 中未找到 ytoken 字段")
+    raise YhxtAuthError(f"{source} 中未找到 ytoken 字段")
+
+
+def load_ytoken_from_auth_state(path_or_json: str | Path) -> str:
+    """从 auth-state 取 ytoken，同时接受两种传入方式。
+
+    - **文件路径**（本地排查用）：读该文件。
+    - **内联 JSON**（GitHub Actions 用）：直接解析字符串。
+      Actions 的 runner 上没有浏览器导出的文件，只有 Secret 文本，
+      因此只认路径的旧写法在 CI 里永远取不到 token。
+    """
+    text = str(path_or_json).strip()
+    if text.startswith("{"):
+        return parse_auth_state(text, source="YHXT_AUTH_STATE(内联 JSON)")
+    try:
+        raw = Path(text).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise YhxtAuthError(
+            f"YHXT_AUTH_STATE 既不是内联 JSON，也无法作为文件读取：{exc}"
+        ) from exc
+    return parse_auth_state(raw, source=str(text))
 
 
 # ------------------------------------------------------------------ 客户端
@@ -386,15 +411,19 @@ def fetch_normalized(client: YhxtClient) -> list[dict]:
 def build_client_from_env() -> YhxtClient:
     """按环境决定取 token 的方式，返回可用客户端。
 
-    优先级：YHXT_YTOKEN > YHXT_AUTH_STATE(文件) > CAS 账号密码登录。
+    优先级：YHXT_YTOKEN > YHXT_AUTH_STATE(内联 JSON 或文件路径) > CAS 账号密码登录。
     """
     token = (os.getenv("YHXT_YTOKEN") or "").strip()
     if token:
         return YhxtClient(token)
 
-    state_path = (os.getenv("YHXT_AUTH_STATE") or "").strip()
-    if state_path and Path(state_path).exists():
-        return YhxtClient(load_ytoken_from_auth_state(state_path))
+    state = (os.getenv("YHXT_AUTH_STATE") or "").strip()
+    if state:
+        if state.startswith("{") or Path(state).exists():
+            return YhxtClient(load_ytoken_from_auth_state(state))
+        # 显式配置了却既不是 JSON 也不是文件：不静默忽略，
+        # 否则会退化成「配了却没用」的隐性问题。
+        print(f"警告：YHXT_AUTH_STATE 既不是内联 JSON，也不指向已存在的文件，已忽略：{state[:48]}")
 
     username = (os.getenv("SWJTU_USERNAME") or os.getenv("YHXT_USERNAME") or "").strip()
     password = os.getenv("SWJTU_PASSWORD") or os.getenv("YHXT_PASSWORD") or ""

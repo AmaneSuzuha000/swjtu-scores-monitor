@@ -30,6 +30,7 @@ jobs:
       - name: Run script
         env:
           YHXT_YTOKEN: ${{ secrets.YHXT_YTOKEN }}
+          # 可选：auth-state 的内联 JSON 内容（含 ytoken），不是文件路径
           YHXT_AUTH_STATE: ${{ secrets.YHXT_AUTH_STATE }}
           SWJTU_USERNAME: ${{ secrets.SWJTU_USERNAME }}
           SWJTU_PASSWORD: ${{ secrets.SWJTU_PASSWORD }}
