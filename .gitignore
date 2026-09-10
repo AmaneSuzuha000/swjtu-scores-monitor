@@ -1,8 +1,12 @@
 #custom
 .vscode
+.idea/
 utils/debug_output/*
 !utils/debug_output/.gitkeep
 .DS_Store
+
+# 本地排查脚本写出的真实成绩快照，绝不入库
+test/scores_snapshot.json
 
 
 # Byte-compiled / optimized / DLL files
