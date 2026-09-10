@@ -11,23 +11,37 @@ from utils import ocr  # 导入自定义OCR模块
 from urllib.parse import urlparse
 
 # --- 配置与常量 ---
-BASE_URL = "http://jwc.swjtu.edu.cn"
+BASE_URL = os.getenv("JWC_BASE_URL", "http://jwc.swjtu.edu.cn")
 
-# 发起请求，允许重定向
-response = requests.get(
-    BASE_URL,
-    timeout=5,
-    allow_redirects=True,  # 自动跟随重定向
-    verify=True  # 验证 SSL 证书
-)
 
-# 解析最终的 URL
-final_url = response.url
-parsed = urlparse(final_url)
-final_protocol = parsed.scheme
-if final_protocol == "http":
-    BASE_URL = "http://jwc.swjtu.edu.cn"
-    print("检测到教务使用 HTTP，已切换为 HTTP 访问。")
+def _detect_protocol(base_url, timeout=5):
+    """跟随重定向探测教务实际使用的协议。
+
+    探测失败（网络不可达、超时）时返回原值而不抛出：这段代码在 import 时执行，
+    一旦抛异常整个模块就无法导入，CI 和测试会直接崩掉，而教务临时不可达
+    本来只应该让当次任务失败。
+    """
+    try:
+        probe = requests.get(
+            base_url,
+            timeout=timeout,
+            allow_redirects=True,  # 自动跟随重定向
+            verify=True,  # 验证 SSL 证书
+        )
+    except Exception as e:
+        print(f"协议探测失败，沿用 {base_url}: {e}")
+        return base_url
+
+    # 解析最终的 URL
+    final_protocol = urlparse(probe.url).scheme
+    if final_protocol and final_protocol != urlparse(base_url).scheme:
+        detected = f"{final_protocol}://{urlparse(base_url).netloc}"
+        print(f"检测到教务使用 {final_protocol}，已切换为 {detected} 访问。")
+        return detected
+    return base_url
+
+
+BASE_URL = _detect_protocol(BASE_URL)
 
 LOGIN_PAGE_URL = f"{BASE_URL}/service/login.html"
 LOGIN_API_URL = f"{BASE_URL}/vatuu/UserLoginAction"
@@ -40,6 +54,32 @@ HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
     'Origin': BASE_URL,
 }
+
+# jwc 的 /vatuu 走 CAS cookie 会话：会话失效时不返回 4xx，而是 302 回登录页
+# 或直接回填登录页文本，只按“表格没找到”处理会把登录失效误报成没有成绩。
+LOGIN_MARKERS = (
+    "/service/login.html",
+    "/authserver/login",
+    "统一身份认证",
+    "请先登录",
+)
+
+
+def normalize_response_encoding(response):
+    """jwc 的 Content-Type 不带 charset，requests 会退回 ISO-8859-1，
+    中文课程名/教师名因此乱码；而这些字符串正是变化对比用的字典 key，
+    乱码会让每门课都被判定为“新增”。
+    """
+    if not response.encoding or response.encoding.lower() == "iso-8859-1":
+        response.encoding = response.apparent_encoding or "utf-8"
+    return response
+
+
+def looks_logged_out(response):
+    """响应是否被重定向回了登录页（会话已失效）。"""
+    final_url = response.url or ""
+    return any(marker in final_url for marker in LOGIN_MARKERS)
+
 
 class ScoreFetcher:
     def __init__(self, username, password):
@@ -102,6 +142,12 @@ class ScoreFetcher:
         try:
             response = self.session.get(ALL_SCORES_URL, headers={'Referer': LOADING_URL}, timeout=15)
             response.raise_for_status()
+            normalize_response_encoding(response)
+
+            if looks_logged_out(response):
+                print("错误：会话已失效（被重定向回登录页），本次不按无成绩处理。")
+                self.is_logged_in = False
+                return None
 
             soup = BeautifulSoup(response.text, 'html.parser')
             score_table = soup.find('table', id='table3')
@@ -133,6 +179,12 @@ class ScoreFetcher:
         try:
             response = self.session.get(NORMAL_SCORES_URL, headers={'Referer': ALL_SCORES_URL}, timeout=15)
             response.raise_for_status()
+            normalize_response_encoding(response)
+
+            if looks_logged_out(response):
+                print("错误：会话已失效（被重定向回登录页），本次不按无成绩处理。")
+                self.is_logged_in = False
+                return None
             
             soup = BeautifulSoup(response.text, 'html.parser')
             score_table = soup.find('table', id='table3')
