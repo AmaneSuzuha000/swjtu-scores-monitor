@@ -51,6 +51,9 @@ async def trigger_fetch_scores(api_key: str = Security(get_api_key)):
         print("正在将成绩数据存入数据库...")
         old = database.get_latest_scores()
         upsert_results = database.save_scores(combined_scores)
+        # save_scores() 吞掉异常并返回 None，不检查就会把写入失败报成成功。
+        if upsert_results is None:
+            raise HTTPException(status_code=500, detail="成绩保存失败，本次结果未写入历史。")
         new = database.get_latest_scores()
         print("--- 任务完成 ---")
         return {
@@ -117,6 +120,12 @@ async def trigger_monitor_scores(api_key: str = Security(get_api_key)):
         # 1. 获取数据库中的旧成绩
         print("正在从数据库获取历史成绩...")
         old_scores = database.get_latest_scores()
+
+        # get_latest_scores() 用 None 表示读取失败、[] 表示确实没有历史成绩。
+        # 两者必须区分：把读取失败当成没有历史，会把整份成绩单误判为
+        # “全部新增”并群发通知。
+        if old_scores is None:
+            return {"status": "error", "message": "历史成绩读取失败，本次跳过对比以避免误报新增。"}
         
         # 2. 登录并获取最新成绩
         print("正在登录教务系统获取最新成绩...")
@@ -228,7 +237,15 @@ async def trigger_monitor_scores(api_key: str = Security(get_api_key)):
             
             # 保存新成绩到数据库
             print("正在将新成绩保存到数据库...")
-            database.save_scores(new_scores)
+            # 通知已经发出，若此时保存失败，下一轮会以同样的历史做对比，
+            # 把这批变化原样再报一次，必须显式失败。
+            if database.save_scores(new_scores) is None:
+                return {
+                    "status": "error",
+                    "message": f"已发送 {len(changes)} 项变化通知，但历史成绩保存失败；"
+                               f"下次运行会重复报告同样的变化，请检查 GIST_PAT 与网络。",
+                    "changes_count": len(changes),
+                }
             
             return {
                 "status": "success",
