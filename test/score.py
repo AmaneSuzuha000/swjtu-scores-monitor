@@ -54,7 +54,7 @@ class ScoreFetcher:
             captcha_code = None
             try:
                 captcha_params = {'test': int(time.time() * 1000)}
-                response = self.session.get(CAPTCHA_URL, params=captcha_params)
+                response = self.session.get(CAPTCHA_URL, params=captcha_params, timeout=10)
                 response.raise_for_status()
                 image_bytes = response.content
                 
@@ -79,7 +79,7 @@ class ScoreFetcher:
             login_headers = self.session.headers.copy()
             login_headers['Referer'] = LOGIN_PAGE_URL
             try:
-                response = self.session.post(LOGIN_API_URL, data=login_payload, headers=login_headers)
+                response = self.session.post(LOGIN_API_URL, data=login_payload, headers=login_headers, timeout=10)
                 response.raise_for_status()
                 login_result = response.json()
                 if not login_result.get('loginStatus') == '1':
@@ -91,7 +91,7 @@ class ScoreFetcher:
                     print("正在访问加载页面以建立完整会话...")
                     loading_headers = self.session.headers.copy()
                     loading_headers['Referer'] = LOGIN_PAGE_URL
-                    response_loading = self.session.get(LOADING_URL, headers=loading_headers)
+                    response_loading = self.session.get(LOADING_URL, headers=loading_headers, timeout=10)
                     response_loading.raise_for_status()
                     print("会话建立成功，已登录。")
                     self.is_logged_in = True
@@ -126,7 +126,7 @@ class ScoreFetcher:
         try:
             headers = self.session.headers.copy()
             headers['Referer'] = LOADING_URL
-            response = self.session.get(ALL_SCORES_URL, headers=headers)
+            response = self.session.get(ALL_SCORES_URL, headers=headers, timeout=15)
             response.raise_for_status()
 
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -166,7 +166,7 @@ class ScoreFetcher:
         try:
             headers = self.session.headers.copy()
             headers['Referer'] = ALL_SCORES_URL
-            response = self.session.get(NORMAL_SCORES_URL, headers=headers)
+            response = self.session.get(NORMAL_SCORES_URL, headers=headers, timeout=15)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.text, 'html.parser')

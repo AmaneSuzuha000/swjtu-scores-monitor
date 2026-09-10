@@ -5,6 +5,10 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 
+# SMTP 连接/发送超时（秒）：缺省时 smtplib 会一直等待，卡死整个监控任务。
+SMTP_TIMEOUT = int(os.getenv("SMTP_TIMEOUT", "30"))
+
+
 def send_email(
     smtp_server,
     smtp_port,
@@ -47,10 +51,10 @@ def send_email(
         # --- 核心修改：根据端口切换连接方式 ---
         if smtp_port == 465:
             # 端口 465：使用 SMTP_SSL (全程加密)
-            server = smtplib.SMTP_SSL(smtp_server, smtp_port)
+            server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=SMTP_TIMEOUT)
         else:
             # 端口 587 或其他：使用普通 SMTP + starttls
-            server = smtplib.SMTP(smtp_server, smtp_port)
+            server = smtplib.SMTP(smtp_server, smtp_port, timeout=SMTP_TIMEOUT)
             server.set_debuglevel(1)
             server.starttls()
 

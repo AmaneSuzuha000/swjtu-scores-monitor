@@ -20,6 +20,8 @@ if not GIST_FILENAME.endswith(".json"):
 _CACHED_GIST_ID = None
 
 BASE_URL = "https://api.github.com/gists"
+# GitHub API 超时（秒）：缺省时 requests 会永久阻塞，把整条 Actions/Vercel 任务挂死。
+HTTP_TIMEOUT = int(os.getenv("GIST_API_TIMEOUT", "20"))
 HEADERS = {
     "Authorization": f"token {GIST_PAT}",
     "Accept": "application/vnd.github.v3+json"
@@ -39,7 +41,7 @@ def _get_or_create_gist_id():
 
     try:
         # 获取用户的所有 Gist
-        response = requests.get(BASE_URL, headers=HEADERS)
+        response = requests.get(BASE_URL, headers=HEADERS, timeout=HTTP_TIMEOUT)
         response.raise_for_status()
         gists = response.json()
 
@@ -71,7 +73,9 @@ def _get_or_create_gist_id():
             }
         }
         
-        create_response = requests.post(BASE_URL, headers=HEADERS, json=create_payload)
+        create_response = requests.post(
+            BASE_URL, headers=HEADERS, json=create_payload, timeout=HTTP_TIMEOUT
+        )
         create_response.raise_for_status()
         
         new_gist = create_response.json()
@@ -100,7 +104,9 @@ def save_scores(scores: list, ttl_seconds: int = None):
             }
         }
         
-        response = requests.patch(update_url, headers=HEADERS, json=payload)
+        response = requests.patch(
+            update_url, headers=HEADERS, json=payload, timeout=HTTP_TIMEOUT
+        )
         response.raise_for_status()
         
         print(f"--- 成功保存到 Gist ---")
@@ -114,7 +120,7 @@ def get_latest_scores():
         gist_id = _get_or_create_gist_id()
         get_url = f"{BASE_URL}/{gist_id}"
         
-        response = requests.get(get_url, headers=HEADERS)
+        response = requests.get(get_url, headers=HEADERS, timeout=HTTP_TIMEOUT)
         response.raise_for_status()
         
         data = response.json()
